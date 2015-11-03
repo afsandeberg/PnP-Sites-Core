@@ -316,6 +316,7 @@
     <Compile Include="Enums\TimeZone.cs" />
     <Compile Include="Enums\VotingExperience.cs" />
     <Compile Include="Enums\WikiPageLayout.cs" />
+    <Compile Include="Export\Export.cs" />
     <Compile Include="Extensions\DictionaryExtensions.cs" />
     <Compile Include="Extensions\EnumerationExtensions.cs" />
     <Compile Include="Extensions\EnumerableExtensions.cs" />
