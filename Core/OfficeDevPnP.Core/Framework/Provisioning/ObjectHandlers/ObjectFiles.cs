@@ -149,10 +149,12 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
             }
             catch (ServerException ex)
             {
+                Console.WriteLine("ErrorCode: {0}, Message: {1}", ex.ServerErrorCode, ex.Message);
                 // Handling the exception stating the "The object specified does not belong to a list."
                 if (ex.ServerErrorCode != -2146232832)
                 {
-                    throw;
+                    //throw;
+                    Console.WriteLine("EEE");
                 }
             }
             return checkedOut;
