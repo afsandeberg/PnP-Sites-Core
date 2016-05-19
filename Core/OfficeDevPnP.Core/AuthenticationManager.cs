@@ -4,12 +4,15 @@ using System.Linq;
 using System.Net;
 using System.Security;
 using System.Security.Cryptography.X509Certificates;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Forms;
 using Microsoft.IdentityModel.Clients.ActiveDirectory;
 using Microsoft.SharePoint.Client;
 using OfficeDevPnP.Core.IdentityModel.TokenProviders.ADFS;
 using OfficeDevPnP.Core.Diagnostics;
+using OfficeDevPnP.Core.Utilities;
 
 namespace OfficeDevPnP.Core
 {
@@ -71,13 +74,27 @@ namespace OfficeDevPnP.Core
         /// Returns an app only ClientContext object
         /// </summary>
         /// <param name="siteUrl">Site for which the ClientContext object will be instantiated</param>
-        /// <param name="realm">Realm of the environment (tenant) that requests the ClientContext object</param>
         /// <param name="appId">Application ID which is requesting the ClientContext object</param>
         /// <param name="appSecret">Application secret of the Application which is requesting the ClientContext object</param>
         /// <returns>ClientContext to be used by CSOM code</returns>
-        public ClientContext GetAppOnlyAuthenticatedContext(string siteUrl, string realm, string appId, string appSecret)
+        public ClientContext GetAppOnlyAuthenticatedContext(string siteUrl, string appId, string appSecret)
         {
-            EnsureToken(siteUrl, realm, appId, appSecret);
+            return GetAppOnlyAuthenticatedContext(siteUrl, TokenHelper.GetRealmFromTargetUrl(new Uri(siteUrl)), appId, appSecret);
+        }
+
+        /// <summary>
+        /// Returns an app only ClientContext object
+        /// </summary>
+        /// <param name="siteUrl">Site for which the ClientContext object will be instantiated</param>
+        /// <param name="realm">Realm of the environment (tenant) that requests the ClientContext object</param>
+        /// <param name="appId">Application ID which is requesting the ClientContext object</param>
+        /// <param name="appSecret">Application secret of the Application which is requesting the ClientContext object</param>
+        /// <param name="acsHostUrl">Azure ACS host, defaults to accesscontrol.windows.net but internal pre-production environments use other hosts</param>
+        /// <param name="globalEndPointPrefix">Azure ACS endpoint prefix, defaults to accounts but internal pre-production environments use other prefixes</param>
+        /// <returns>ClientContext to be used by CSOM code</returns>
+        public ClientContext GetAppOnlyAuthenticatedContext(string siteUrl, string realm, string appId, string appSecret, string acsHostUrl = "accesscontrol.windows.net", string globalEndPointPrefix = "accounts")
+        {
+            EnsureToken(siteUrl, realm, appId, appSecret, acsHostUrl, globalEndPointPrefix);
             ClientContext clientContext = Utilities.TokenHelper.GetClientContextWithAccessToken(siteUrl, appOnlyAccessToken);
             return clientContext;
         }
@@ -97,7 +114,68 @@ namespace OfficeDevPnP.Core
             return clientContext;
         }
 
-#if !CLIENTSDKV15
+        /// <summary>
+        /// Returns a SharePoint on-premises / SharePoint Online ClientContext object. Requires claims based authentication with FedAuth cookie.
+        /// </summary>
+        /// <param name="siteUrl">Site for which the ClientContext object will be instantiated</param>
+        /// <returns>ClientContext to be used by CSOM code</returns>
+        public ClientContext GetWebLoginClientContext(string siteUrl)
+        {
+            var cookies = new CookieContainer();
+            var siteUri = new Uri(siteUrl);
+
+            var thread = new Thread(() =>
+            {
+                var form = new System.Windows.Forms.Form();
+                var browser = new System.Windows.Forms.WebBrowser();
+
+                browser.ScriptErrorsSuppressed = true;
+                browser.Dock = DockStyle.Fill;
+
+                form.SuspendLayout();
+                form.Width = 900;
+                form.Height = 500;
+                form.Text = string.Format("Log in to {0}", siteUrl);
+                form.Controls.Add(browser);
+                form.ResumeLayout(false);
+
+                browser.Navigate(siteUri);
+
+                browser.Navigated += (sender, args) =>
+                {
+                    if (siteUri.Host.Equals(args.Url.Host))
+                    {
+                        var cookieString = CookieReader.GetCookie(siteUrl).Replace("; ", ",").Replace(";", ",");
+                        if (Regex.IsMatch(cookieString, "FedAuth", RegexOptions.IgnoreCase))
+                        {
+                            var _cookies = cookieString.Split(',').Where(c => c.StartsWith("FedAuth", StringComparison.InvariantCultureIgnoreCase) || c.StartsWith("rtFa", StringComparison.InvariantCultureIgnoreCase));
+                            cookies.SetCookies(siteUri, string.Join(",", _cookies));
+                            form.Close();
+                        }
+                    }
+                };
+
+                form.Focus();
+                form.ShowDialog();
+                browser.Dispose();
+            });
+
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.Start();
+            thread.Join();
+
+            if (cookies.Count > 0)
+            {
+                var ctx = new ClientContext(siteUrl);
+                ctx.ExecutingWebRequest += (sender, e) => e.WebRequestExecutor.WebRequest.CookieContainer = cookies;
+                return ctx;
+
+            }
+
+            return null;
+        }
+
+#if !ONPREMISES
         /// <summary>
         /// Returns a SharePoint ClientContext using Azure Active Directory authentication. This requires that you have a Azure AD Native Application registered. The user will be prompted for authentication.
         /// </summary>
@@ -127,6 +205,45 @@ namespace OfficeDevPnP.Core
             _clientId = clientId;
             _redirectUri = redirectUri;
             clientContext.ExecutingWebRequest += clientContext_NativeApplicationExecutingWebRequest;
+
+            return clientContext;
+        }
+
+        /// <summary>
+        /// Returns a SharePoint ClientContext using Azure Active Directory authentication. This requires that you have a Azure AD Web Application registered. The user will not be prompted for authentication, the current user's authentication context will be used by leveraging ADAL.
+        /// </summary>
+        /// <param name="siteUrl">Site for which the ClientContext object will be instantiated</param>
+        /// <param name="accessTokenGetter">The AccessToken getter method to use</param>
+        /// <returns></returns>
+        public ClientContext GetAzureADWebApplicationAuthenticatedContext(String siteUrl, Func<String, String> accessTokenGetter)
+        {
+            var clientContext = new ClientContext(siteUrl);
+            clientContext.ExecutingWebRequest += (sender, args) =>
+            {
+                Uri resourceUri = new Uri(siteUrl);
+                resourceUri = new Uri(resourceUri.Scheme + "://" + resourceUri.Host + "/");
+
+                String accessToken = accessTokenGetter(resourceUri.ToString());
+                args.WebRequestExecutor.RequestHeaders["Authorization"] = "Bearer " + accessToken;
+            };
+
+            return clientContext;
+        }
+
+        /// <summary>
+        /// Returns a SharePoint ClientContext using Azure Active Directory authentication. This requires that you have a Azure AD Web Application registered. The user will not be prompted for authentication, the current user's authentication context will be used by leveraging an explicit OAuth 2.0 Access Token value.
+        /// </summary>
+        /// <param name="siteUrl">Site for which the ClientContext object will be instantiated</param>
+        /// <param name="accessToken">An explicit value for the AccessToken</param>
+        /// <returns></returns>
+        public ClientContext GetAzureADAccessTokenAuthenticatedContext(String siteUrl, String accessToken)
+        {
+            var clientContext = new ClientContext(siteUrl);
+
+            clientContext.ExecutingWebRequest += (sender, args) =>
+            {
+                args.WebRequestExecutor.RequestHeaders["Authorization"] = "Bearer " + accessToken;
+            };
 
             return clientContext;
         }
@@ -362,8 +479,10 @@ namespace OfficeDevPnP.Core
         /// <param name="realm">Realm of the environment (tenant) that requests the ClientContext object</param>
         /// <param name="appId">Application ID which is requesting the ClientContext object</param>
         /// <param name="appSecret">Application secret of the Application which is requesting the ClientContext object</param>
+        /// <param name="acsHostUrl">Azure ACS host, defaults to accesscontrol.windows.net but internal pre-production environments use other hosts</param>
+        /// <param name="globalEndPointPrefix">Azure ACS endpoint prefix, defaults to accounts but internal pre-production environments use other prefixes</param>
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Globalization", "CA1303:Do not pass literals as localized parameters", MessageId = "OfficeDevPnP.Core.Diagnostics.Log.Debug(System.String,System.String,System.Object[])")]
-        private void EnsureToken(string siteUrl, string realm, string appId, string appSecret)
+        private void EnsureToken(string siteUrl, string realm, string appId, string appSecret, string acsHostUrl, string globalEndPointPrefix)
         {
             if (appOnlyAccessToken == null)
             {
@@ -376,6 +495,17 @@ namespace OfficeDevPnP.Core
                         Utilities.TokenHelper.ServiceNamespace = realm;
                         Utilities.TokenHelper.ClientId = appId;
                         Utilities.TokenHelper.ClientSecret = appSecret;
+
+                        if (!String.IsNullOrEmpty(acsHostUrl))
+                        {
+                            Utilities.TokenHelper.AcsHostUrl = acsHostUrl;
+                        }
+
+                        if (!String.IsNullOrEmpty(globalEndPointPrefix))
+                        {
+                            Utilities.TokenHelper.GlobalEndPointPrefix = globalEndPointPrefix;
+                        }
+
                         var response = Utilities.TokenHelper.GetAppOnlyAccessToken(SHAREPOINT_PRINCIPAL, new Uri(siteUrl).Authority, realm);
                         string token = response.AccessToken;
                         ThreadPool.QueueUserWorkItem(obj =>

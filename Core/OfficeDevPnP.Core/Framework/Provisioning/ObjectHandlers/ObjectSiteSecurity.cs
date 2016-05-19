@@ -95,7 +95,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
                             g => g.Owner.LoginName);
                         web.Context.ExecuteQueryRetry();
                         var isDirty = false;
-                        if (group.Description != parser.ParseString(siteGroup.Description))
+                        if (!String.IsNullOrEmpty(group.Description) && group.Description != parser.ParseString(siteGroup.Description))
                         {
                             group.Description = parser.ParseString(siteGroup.Description);
                             isDirty = true;
@@ -240,7 +240,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
             return parser;
         }
 
-        private static void AddUserToGroup(Web web, Group group, List<User> members, PnPMonitoredScope scope)
+        private static void AddUserToGroup(Web web, Group group, IEnumerable<User> members, PnPMonitoredScope scope)
         {
             if (members.Any())
             {

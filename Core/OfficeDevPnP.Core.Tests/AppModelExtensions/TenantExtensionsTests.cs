@@ -8,35 +8,66 @@ using Microsoft.SharePoint.Client;
 using Microsoft.Online.SharePoint.TenantAdministration;
 using System.Configuration;
 using OfficeDevPnP.Core.Entities;
+using System.Threading;
+using OfficeDevPnP.Core.Utilities;
 
 namespace OfficeDevPnP.Core.Tests.AppModelExtensions
 {
-#if !CLIENTSDKV15
+#if !ONPREMISES
     [TestClass()]
     public class TenantExtensionsTests
     {
-        private string sitecollectionName = "TestPnPSC_123456789_";
+        private static string sitecollectionNamePrefix = "TestPnPSC_123456789_";
+        private string sitecollectionName = "";
 
         #region Test initialize and cleanup
-        [TestInitialize()]
-        public void Initialize()
+        [ClassInitialize()]
+        public static void ClassInit(TestContext context)
         {
-            sitecollectionName = sitecollectionName + (new Random().Next(0, 9)).ToString();
             using (var tenantContext = TestCommon.CreateTenantClientContext())
             {
-                //Ensure nothing was left behind before we run our tests
-                CleanupCreatedTestSiteCollections(tenantContext);
+                CleanupAllTestSiteCollections(tenantContext);
             }
         }
 
-        [TestCleanup()]
-        public void CleanUp()
+        [ClassCleanup()]
+        public static void ClassCleanup()
         {
             using (var tenantContext = TestCommon.CreateTenantClientContext())
             {
-                //Cleanup after test run
-                CleanupCreatedTestSiteCollections(tenantContext);
+                CleanupAllTestSiteCollections(tenantContext);
             }
+        }
+
+        private static void CleanupAllTestSiteCollections(ClientContext tenantContext)
+        {
+            var tenant = new Tenant(tenantContext);
+
+            var siteCols = tenant.GetSiteCollections();
+
+            foreach (var siteCol in siteCols)
+            {
+                if (siteCol.Url.Contains(sitecollectionNamePrefix))
+                {
+                    try
+                    {// ensure the site collection in unlocked state before deleting
+                        tenant.SetSiteLockState(siteCol.Url, SiteLockState.Unlock);
+                        // delete the site collection, do not use the recyle bin
+                        tenant.DeleteSiteCollection(siteCol.Url, false);
+                    }
+                    catch (Exception ex)
+                    {
+                        // eat all exceptions
+                        Console.WriteLine(ex.ToString());
+                    }
+                }
+            }
+        }
+
+        [TestInitialize()]
+        public void Initialize()
+        {
+            sitecollectionName = sitecollectionNamePrefix + Guid.NewGuid().ToString();
         }
         #endregion
 
@@ -197,6 +228,35 @@ namespace OfficeDevPnP.Core.Tests.AppModelExtensions
                 Assert.IsFalse(siteExists2, "Site collection deletion from recycle bin failed");
             }
         }
+
+        [TestMethod]
+        public void CreateDeleteCreateSiteCollectionTest()
+        {
+            using (var tenantContext = TestCommon.CreateTenantClientContext())
+            {
+                var tenant = new Tenant(tenantContext);
+
+                //Create site collection test
+                string siteToCreateUrl = CreateTestSiteCollection(tenant, sitecollectionName);
+                var siteExists = tenant.SiteExists(siteToCreateUrl);
+                Assert.IsTrue(siteExists, "Site collection creation failed");
+
+                //Delete site collection test: move to recycle bin
+                tenant.DeleteSiteCollection(siteToCreateUrl, true);
+                bool recycled = tenant.CheckIfSiteExists(siteToCreateUrl, "Recycled");
+                Assert.IsTrue(recycled, "Site collection recycling failed");
+
+                //Remove from recycle bin
+                tenant.DeleteSiteCollectionFromRecycleBin(siteToCreateUrl, true);
+                var siteExists2 = tenant.SiteExists(siteToCreateUrl);
+                Assert.IsFalse(siteExists2, "Site collection deletion from recycle bin failed");
+
+                //Create a site collection using the same url as the previously deleted site collection
+                siteToCreateUrl = CreateTestSiteCollection(tenant, sitecollectionName);
+                siteExists = tenant.SiteExists(siteToCreateUrl);
+                Assert.IsTrue(siteExists, "Second site collection creation failed");
+            }
+        }
         #endregion
 
         #region Site lockstate tests
@@ -205,6 +265,8 @@ namespace OfficeDevPnP.Core.Tests.AppModelExtensions
         {
             using (var tenantContext = TestCommon.CreateTenantClientContext())
             {
+                tenantContext.RequestTimeout = Timeout.Infinite;
+
                 var tenant = new Tenant(tenantContext);
                 string devSiteUrl = ConfigurationManager.AppSettings["SPODevSiteUrl"];
                 string siteToCreateUrl = GetTestSiteCollectionName(devSiteUrl, sitecollectionName);
@@ -239,7 +301,7 @@ namespace OfficeDevPnP.Core.Tests.AppModelExtensions
         #endregion
 
         #region Private helper methods
-        private string GetTestSiteCollectionName(string devSiteUrl, string siteCollection)
+        private static string GetTestSiteCollectionName(string devSiteUrl, string siteCollection)
         {
             Uri u = new Uri(devSiteUrl);
             string host = String.Format("{0}://{1}:{2}", u.Scheme, u.DnsSafeHost, u.Port);
@@ -252,19 +314,6 @@ namespace OfficeDevPnP.Core.Tests.AppModelExtensions
             path = path.Substring(0, path.LastIndexOf('/'));
 
             return string.Format("{0}{1}/{2}", host, path, siteCollection);
-        }
-
-        private void CleanupCreatedTestSiteCollections(ClientContext tenantContext)
-        {
-            string devSiteUrl = ConfigurationManager.AppSettings["SPODevSiteUrl"];
-            String testSiteCollection = GetTestSiteCollectionName(devSiteUrl, sitecollectionName);
-
-            //Ensure the test site collection was deleted and removed from recyclebin
-            var tenant = new Tenant(tenantContext);
-            if (tenant.SiteExists(testSiteCollection))
-            {
-                tenant.DeleteSiteCollection(testSiteCollection, false);
-            }
         }
 
         private string CreateTestSiteCollection(Tenant tenant, string sitecollectionName)

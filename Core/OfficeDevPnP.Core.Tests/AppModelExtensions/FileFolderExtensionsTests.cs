@@ -30,8 +30,28 @@ namespace OfficeDevPnP.Core.Tests.AppModelExtensions
         {
             clientContext = TestCommon.CreateClientContext();
 
-            documentLibrary = clientContext.Web.CreateList(ListTemplateType.DocumentLibrary, DocumentLibraryName, false);
-            folder = documentLibrary.RootFolder.CreateFolder(FolderName);
+            documentLibrary = clientContext.Web.GetListByTitle(DocumentLibraryName);
+
+            if (documentLibrary == null)
+            {
+                documentLibrary = clientContext.Web.CreateList(ListTemplateType.DocumentLibrary, DocumentLibraryName, false);
+            }
+
+            clientContext.Load(documentLibrary.RootFolder.Folders);
+            clientContext.ExecuteQueryRetry();
+            foreach (Folder existingFolder in documentLibrary.RootFolder.Folders)
+            {
+                if (string.Equals(existingFolder.Name, FolderName, StringComparison.InvariantCultureIgnoreCase))
+                {
+                    folder = existingFolder;
+                    break;
+                }
+            }
+
+            if (folder == null)
+            {
+                folder = documentLibrary.RootFolder.CreateFolder(FolderName);
+            }
 
             var fci = new FileCreationInformation();
             fci.Content = System.IO.File.ReadAllBytes(TestFilePath1);
@@ -164,10 +184,7 @@ namespace OfficeDevPnP.Core.Tests.AppModelExtensions
         {
             var fileName1 = System.IO.Path.GetFileName(TestFilePath1);
             var file1 = folder.GetFile(fileName1);
-            Assert.AreEqual(fileName1, file1.Name, "Existing file could not be found.");
-
-            var file2 = folder.GetFile(fileName1.ToUpperInvariant());
-            Assert.AreEqual(fileName1, file2.Name, "Existing file could not be found: case-sensitive.");
+            Assert.AreEqual(fileName1, file1.Name, "Existing file could be found.");
 
             var fileName2 = System.IO.Path.GetFileName(TestFilePath2);
             var file3 = folder.GetFile(fileName2);
@@ -202,11 +219,11 @@ namespace OfficeDevPnP.Core.Tests.AppModelExtensions
         {
             string folderName = "test_1";
 
-            clientContext.Load(documentLibrary.RootFolder);
+            clientContext.Load(documentLibrary, d => d.RootFolder, d => d.RootFolder.Folders);
             clientContext.ExecuteQueryRetry();
             documentLibrary.RootFolder.EnsureFolder(folderName);
 
-            clientContext.Load(documentLibrary.RootFolder);
+            clientContext.Load(documentLibrary, d => d.RootFolder, d => d.RootFolder.Folders);
             clientContext.ExecuteQueryRetry();
             ensureLibraryFolderTest = null;
             foreach (Folder existingFolder in documentLibrary.RootFolder.Folders)
@@ -234,7 +251,8 @@ namespace OfficeDevPnP.Core.Tests.AppModelExtensions
             Assert.IsNotNull(testFolder);
 
             clientContext.Load(testFolder);
-            Utility.EnsureWeb(clientContext.Web.Context, clientContext.Web, "ServerRelativeUrl");
+            clientContext.Web.EnsureProperty(w => w.ServerRelativeUrl);
+
             clientContext.ExecuteQueryRetry();
             Assert.AreEqual(testFolder.ServerRelativeUrl, String.Format("{0}/{1}/{2}",clientContext.Web.ServerRelativeUrl, DocumentLibraryName, folderName));
         }

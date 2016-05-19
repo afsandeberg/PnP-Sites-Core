@@ -5,6 +5,7 @@ using Microsoft.SharePoint.Client;
 using OfficeDevPnP.Core.Framework.Provisioning.Model;
 using Field = Microsoft.SharePoint.Client.Field;
 using OfficeDevPnP.Core.Diagnostics;
+using OfficeDevPnP.Core.Utilities;
 
 namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
 {
@@ -59,32 +60,24 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
                 if (fieldElement.Attribute("List") != null)
                 {
                     var fieldId = Guid.Parse(fieldElement.Attribute("ID").Value);
-                    var listIdentifier = fieldElement.Attribute("List").Value;
+                    var listIdentifier = parser.ParseString(fieldElement.Attribute("List").Value);
+                    var relationshipDeleteBehavior = fieldElement.Attribute("RelationshipDeleteBehavior") != null ? fieldElement.Attribute("RelationshipDeleteBehavior").Value : string.Empty;
                     var webId = string.Empty;
 
                     var field = rootWeb.Fields.GetById(fieldId);
-                    rootWeb.Context.Load(field, f => f.SchemaXml);
+                    rootWeb.Context.Load(field, f => f.SchemaXmlWithResourceTokens);
                     rootWeb.Context.ExecuteQueryRetry();
 
+                    List sourceList = FindSourceList(listIdentifier, web, rootWeb);
 
-                    Guid listGuid;
-                    if (!Guid.TryParse(parser.ParseString(listIdentifier), out listGuid))
+                    if (sourceList != null)
                     {
-                        var sourceListUrl = UrlUtility.Combine(web.ServerRelativeUrl, parser.ParseString(listIdentifier));
-                        var sourceList = rootWeb.Lists.FirstOrDefault(l => l.RootFolder.ServerRelativeUrl.Equals(sourceListUrl, StringComparison.OrdinalIgnoreCase));
-                        if (sourceList != null)
-                        {
-                            listGuid = sourceList.Id;
+                        rootWeb.Context.Load(sourceList.ParentWeb);
+                        rootWeb.Context.ExecuteQueryRetry();
 
-                            rootWeb.Context.Load(sourceList.ParentWeb);
-                            rootWeb.Context.ExecuteQueryRetry();
+                        webId = sourceList.ParentWeb.Id.ToString();
 
-                            webId = sourceList.ParentWeb.Id.ToString();
-                        }
-                    }
-                    if (listGuid != Guid.Empty)
-                    {
-                        ProcessField(field, listGuid, webId);
+                        ProcessField(field, sourceList.Id, webId, relationshipDeleteBehavior);
                     }
                 }
             }
@@ -100,7 +93,8 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
                     if (fieldElement.Attribute("List") == null) continue;
 
                     var fieldId = Guid.Parse(fieldElement.Attribute("ID").Value);
-                    var listIdentifier = fieldElement.Attribute("List").Value;
+                    var listIdentifier = parser.ParseString(fieldElement.Attribute("List").Value);
+                    var relationshipDeleteBehavior = fieldElement.Attribute("RelationshipDeleteBehavior") != null ? fieldElement.Attribute("RelationshipDeleteBehavior").Value : string.Empty;
                     var webId = string.Empty;
 
                     var listUrl = UrlUtility.Combine(web.ServerRelativeUrl, parser.ParseString(listInstance.Url));
@@ -108,28 +102,27 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
                     var createdList = web.Lists.FirstOrDefault(l => l.RootFolder.ServerRelativeUrl.Equals(listUrl, StringComparison.OrdinalIgnoreCase));
                     if (createdList != null)
                     {
-                        var field = createdList.Fields.GetById(fieldId);
-                        web.Context.Load(field, f => f.SchemaXml);
-                        web.Context.ExecuteQueryRetry();
-
-                        Guid listGuid;
-                        if (!Guid.TryParse(parser.ParseString(listIdentifier), out listGuid))
+                        try
                         {
-                            var sourceListUrl = UrlUtility.Combine(web.ServerRelativeUrl, parser.ParseString(listIdentifier));
-                            var sourceList = web.Lists.FirstOrDefault(l => l.RootFolder.ServerRelativeUrl.Equals(sourceListUrl, StringComparison.OrdinalIgnoreCase));
+                            var field = createdList.Fields.GetById(fieldId);
+                            web.Context.Load(field, f => f.SchemaXmlWithResourceTokens);
+                            web.Context.ExecuteQueryRetry();
+
+                            List sourceList = FindSourceList(listIdentifier, web, rootWeb);
+
                             if (sourceList != null)
                             {
-                                listGuid = sourceList.Id;
-
                                 web.Context.Load(sourceList.ParentWeb);
                                 web.Context.ExecuteQueryRetry();
 
                                 webId = sourceList.ParentWeb.Id.ToString();
+                                ProcessField(field, sourceList.Id, webId, relationshipDeleteBehavior);
                             }
                         }
-                        if (listGuid != Guid.Empty)
+                        catch (ArgumentException ex)
                         {
-                            ProcessField(field, listGuid, webId);
+                            // We skip and log any issues related to not existing lookup fields
+                            scope.LogError(String.Format("Exception searching for field! {0}", ex.Message));
                         }
                     }
                 }
@@ -138,17 +131,48 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
             return parser;
         }
 
-        private static void ProcessField(Field field, Guid listGuid, string webId)
+        private static List FindSourceList(string listIdentifier, Web web, Web rootWeb)
+        {
+            Guid listGuid = Guid.Empty;
+
+            if (!Guid.TryParse(listIdentifier, out listGuid))
+            {
+                var sourceListUrl = UrlUtility.Combine(web.ServerRelativeUrl, listIdentifier);
+                return web.Lists.FirstOrDefault(l => l.RootFolder.ServerRelativeUrl.Equals(sourceListUrl, StringComparison.OrdinalIgnoreCase));
+            }
+            else
+            {
+                List retVal = rootWeb.Lists.FirstOrDefault(l => l.Id.Equals(listGuid));
+
+                if(retVal == null)
+                {
+                    retVal = web.Lists.FirstOrDefault(l => l.Id.Equals(listGuid));
+                }
+
+                if(retVal == null)
+                {
+                    Log.Warning(Constants.LOGGING_SOURCE, CoreResources.Provisioning_ObjectHandlers_LookupFields_LookupTargetListLookupFailed__0, listIdentifier);
+                }
+                return retVal;
+            }
+        }
+
+        private static void ProcessField(Field field, Guid listGuid, string webId, string relationshipDeleteBehavior)
         {
             var isDirty = false;
 
-            var existingFieldElement = XElement.Parse(field.SchemaXml);
+            var existingFieldElement = XElement.Parse(field.SchemaXmlWithResourceTokens);
 
-            isDirty = UpdateFieldAttribute(existingFieldElement, "List", listGuid.ToString(), false);
+            isDirty = UpdateFieldAttribute(existingFieldElement, "List", listGuid.ToString("B"), false);
 
             isDirty = UpdateFieldAttribute(existingFieldElement, "WebId", webId, isDirty);
 
-            isDirty = UpdateFieldAttribute(existingFieldElement, "SourceID", webId, isDirty);
+            var webIdGuid = Guid.Parse(webId);
+
+            isDirty = UpdateFieldAttribute(existingFieldElement, "SourceID", webIdGuid.ToString("B"), isDirty);
+
+            if (!string.IsNullOrEmpty(relationshipDeleteBehavior))
+                isDirty = UpdateFieldAttribute(existingFieldElement, "RelationshipDeleteBehavior", relationshipDeleteBehavior, isDirty);
 
             if (isDirty)
             {

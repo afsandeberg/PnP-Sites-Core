@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Configuration;
+using System.Diagnostics;
 using System.Linq;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using OfficeDevPnP.Core.Entities;
@@ -17,11 +18,37 @@ namespace Microsoft.SharePoint.Client.Tests
         private string _userLogin;
 
         #region Test initialize and cleanup
+        [ClassInitialize()]
+        public static void ClassInit(TestContext context)
+        {
+            // delete all the sub sites of 4 characters long...cleanup for potentially failed executions of
+            // AddPermissionLevelToGroupSubSiteTest and RemovePermissionLevelFromGroupSubSiteTest tests
+            using (var clientContext = TestCommon.CreateClientContext())
+            {
+                var subWebs = clientContext.Web.Webs;
+                clientContext.Load(subWebs, wc => wc.Include(w => w.ServerRelativeUrl));
+                clientContext.ExecuteQueryRetry();
+
+                for (int i = subWebs.Count - 1; i >= 0; i--)
+                {
+                    if (subWebs[i].ServerRelativeUrl.Split('/')[3].Length == 4)
+                    {
+                        try
+                        {
+                            subWebs[i].DeleteObject();
+                            clientContext.ExecuteQueryRetry();
+                        }
+                        catch { }
+                    }
+                }
+            }
+        }
+
         [TestInitialize]
         public void Initialize()
         {
 
-#if !CLIENTSDKV15
+#if !ONPREMISES
             _userLogin = ConfigurationManager.AppSettings["SPOUserName"];
             if (TestCommon.AppOnlyTesting())
             {
@@ -77,7 +104,7 @@ namespace Microsoft.SharePoint.Client.Tests
             {
                 // Count admins
                 int initialCount = clientContext.Web.GetAdministrators().Count;
-                #if !CLIENTSDKV15
+                #if !ONPREMISES
                 var userEntity = new UserEntity {LoginName = _userLogin, Email = _userLogin};
                 #else
                 var userEntity = new UserEntity { LoginName = _userLogin };
@@ -385,7 +412,7 @@ namespace Microsoft.SharePoint.Client.Tests
         #endregion
 
         #region Reader access tests
-#if !CLIENTSDKV15
+#if !ONPREMISES
         [TestMethod]
         public void AddReaderAccessToEveryoneExceptExternalsTest()
         {
@@ -438,6 +465,25 @@ namespace Microsoft.SharePoint.Client.Tests
                 }
             }
         }
+        #endregion
+
+        #region Get all unique role assignments tests
+
+        [TestMethod]
+        public void GetAllUniqueRoleAssignmentsTest()
+        {
+            using (ClientContext clientContext = TestCommon.CreateClientContext())
+            {
+                var assignments = clientContext.Web.GetAllUniqueRoleAssignments();
+                Assert.AreNotEqual(null, assignments);
+                Assert.AreNotEqual(0, assignments.Count());
+                foreach (var item in assignments)
+                {
+                    Trace.WriteLine(item);
+                }                
+            }
+        }
+
         #endregion
 
         #region helper methods
@@ -501,8 +547,10 @@ namespace Microsoft.SharePoint.Client.Tests
 			parentWeb.Context.Load(web);
 			parentWeb.Context.ExecuteQueryRetry();
 
-		    return web;
-
+            using (var ctxTestTeamSubSite = parentWeb.Context.Clone(TestCommon.DevSiteUrl + "/" + siteUrl))
+            {
+                return ctxTestTeamSubSite.Web;
+            }
 	    }
 
 	    private string GetRandomString()

@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Xml.Linq;
+using Microsoft.SharePoint.Client.DocumentSet;
 
 namespace Microsoft.SharePoint.Client
 {
@@ -113,6 +114,26 @@ namespace Microsoft.SharePoint.Client
             if (!enumerable.Any())
             {
                 throw new ArgumentException(string.Format("Could not find field with internalName {0}", internalName));
+            }
+
+            enumerable.First().DeleteObject();
+        }
+
+        /// <summary>
+        /// Removes a field by specifying its ID
+        /// </summary>
+        /// <param name="web"></param>
+        /// <param name="fieldId">The id of the field to remove</param>
+        public static void RemoveFieldById(this Web web, string fieldId)
+        {
+            Guid fieldGuid = new Guid(fieldId);
+            var fields = web.Context.LoadQuery(web.Fields.Where(f => f.Id == fieldGuid));
+            web.Context.ExecuteQueryRetry();
+
+            var enumerable = fields as Field[] ?? fields.ToArray();
+            if (!enumerable.Any())
+            {
+                throw new ArgumentException(string.Format("Could not find field with id {0}", fieldId));
             }
 
             enumerable.First().DeleteObject();
@@ -302,6 +323,20 @@ namespace Microsoft.SharePoint.Client
             var results = ct.Context.LoadQuery(fields.Where(item => item.InternalName == fieldName));
             ct.Context.ExecuteQueryRetry();
             return results.FirstOrDefault() != null;
+        }
+
+        /// <summary>
+        /// Adds jsLink to a field.
+        /// </summary>
+        /// <param name="field">The field to add jsLink to</param>
+        /// <param name="jsLink">JSLink to set to the form. Set to empty string to remove the set JSLink customization.
+        /// Specify multiple values separated by pipe symbol. For e.g.: ~sitecollection/_catalogs/masterpage/jquery-2.1.0.min.js|~sitecollection/_catalogs/masterpage/custom.js
+        /// </param>
+        public static void SetJsLinkCustomizations(this Field field, string jsLink)
+        {
+            field.JSLink = jsLink;
+            field.UpdateAndPushChanges(true);
+            field.Context.ExecuteQueryRetry();
         }
 
 
@@ -533,6 +568,20 @@ namespace Microsoft.SharePoint.Client
             return fields;
         }
 
+        /// <summary>
+        /// Adds jsLink to a list field.
+        /// </summary>
+        /// <param name="list">The list where the field exists.</param>
+        /// <param name="fieldName">The field to add jsLink to.</param>
+        /// <param name="jsLink">JSLink to set to the form. Set to empty string to remove the set JSLink customization.
+        /// Specify multiple values separated by pipe symbol. For e.g.: ~sitecollection/_catalogs/masterpage/jquery-2.1.0.min.js|~sitecollection/_catalogs/masterpage/custom.js
+        /// </param>
+        public static void SetJsLinkCustomizations(this List list, string fieldName, string jsLink)
+        {
+            Field field = list.Fields.GetByInternalNameOrTitle(fieldName);
+            field.SetJsLinkCustomizations(jsLink);
+        }
+
         #endregion
 
         #region Helper methods
@@ -624,11 +673,11 @@ namespace Microsoft.SharePoint.Client
         /// <param name="contentTypeID">Complete ID for the content type</param>
         /// <param name="defaultContent">If set true, content type is updated to be default content type for the list</param>
         /// <param name="searchContentTypeInSiteHierarchy">search for content type in site hierarchy</param>
-        public static void AddContentTypeToListById(this List list, string contentTypeID, bool defaultContent = false, bool searchContentTypeInSiteHierarchy = false)
+        public static bool AddContentTypeToListById(this List list, string contentTypeID, bool defaultContent = false, bool searchContentTypeInSiteHierarchy = false)
         {
             var web = list.ParentWeb;
             var contentType = GetContentTypeById(web, contentTypeID, searchContentTypeInSiteHierarchy);
-            AddContentTypeToList(list, contentType, defaultContent);
+            return AddContentTypeToList(list, contentType, defaultContent);
         }
 
         /// <summary>
@@ -638,11 +687,11 @@ namespace Microsoft.SharePoint.Client
         /// <param name="contentTypeName">Name of the content type</param>
         /// <param name="defaultContent">If set true, content type is updated to be default content type for the list</param>
         /// <param name="searchContentTypeInSiteHierarchy">search for content type in site hierarchy</param>
-        public static void AddContentTypeToListByName(this List list, string contentTypeName, bool defaultContent = false, bool searchContentTypeInSiteHierarchy = false)
+        public static bool AddContentTypeToListByName(this List list, string contentTypeName, bool defaultContent = false, bool searchContentTypeInSiteHierarchy = false)
         {
             var web = list.ParentWeb;
             var contentType = GetContentTypeByName(web, contentTypeName, searchContentTypeInSiteHierarchy);
-            AddContentTypeToList(list, contentType, defaultContent);
+            return AddContentTypeToList(list, contentType, defaultContent);
         }
 
         /// <summary>
@@ -651,7 +700,7 @@ namespace Microsoft.SharePoint.Client
         /// <param name="list">List to add content type to</param>
         /// <param name="contentType">Content type to add to the list</param>
         /// <param name="defaultContent">If set true, content type is updated to be default content type for the list</param>
-        public static void AddContentTypeToList(this List list, ContentType contentType, bool defaultContent = false)
+        public static bool AddContentTypeToList(this List list, ContentType contentType, bool defaultContent = false)
         {
             if (contentType == null)
             {
@@ -660,7 +709,7 @@ namespace Microsoft.SharePoint.Client
 
             if (list.ContentTypeExistsById(contentType.Id.StringValue))
             {
-                return;
+                return false;
             }
 
             list.EnsureProperty(l => l.ContentTypesEnabled);
@@ -680,6 +729,54 @@ namespace Microsoft.SharePoint.Client
             {
                 SetDefaultContentTypeToList(list, contentType);
             }
+            return true;
+        }
+
+
+
+        /// <summary>
+        /// Associates field to content type
+        /// </summary>
+        /// <param name="contentType">Content Type to add the field to</param>
+        /// <param name="fieldId">String representation of the id of the field (=Guid)</param>
+        /// <param name="required">True if the field is required</param>
+        /// <param name="hidden">True if the field is hidden</param>
+        public static void AddFieldById(this ContentType contentType, string fieldId, bool required = false, bool hidden = false)
+        {
+            AddFieldById(contentType, Guid.Parse(fieldId), required, hidden);
+        }
+
+        /// <summary>
+        /// Associates field to content type
+        /// </summary>
+        /// <param name="contentType">Content Type to add the field to</param>
+        /// <param name="fieldId">The Id of the field</param>
+        /// <param name="required">True if the field is required</param>
+        /// <param name="hidden">True if the field is hidden</param>
+        public static void AddFieldById(this ContentType contentType, Guid fieldId, bool required = false, bool hidden = false)
+        {
+            var ctx = contentType.Context as ClientContext;
+            var field = ctx.Web.Fields.GetById(fieldId);
+            ctx.Load(field);
+            ctx.ExecuteQueryRetry();
+            AddFieldToContentType(ctx.Web, contentType, field, required, hidden);
+        }
+
+        /// <summary>
+        /// Associates field to content type
+        /// </summary>
+        /// <param name="contentType">Content Type to add the field to</param>
+        /// <param name="fieldName">The title or internal name of the field</param>
+        /// <param name="required">True if the field is required</param>
+        /// <param name="hidden">True if the field is hidden</param>
+        public static void AddFieldByName(this ContentType contentType, string fieldName, bool required = false, bool hidden = false)
+        {
+            var ctx = contentType.Context as ClientContext;
+            var field = ctx.Web.Fields.GetByInternalNameOrTitle(fieldName);
+            ctx.Load(field);
+            ctx.ExecuteQueryRetry();
+
+            AddFieldToContentType(ctx.Web, contentType, field, required, hidden);
         }
 
         /// <summary>
@@ -744,7 +841,7 @@ namespace Microsoft.SharePoint.Client
 
             // Ensure other content-type properties
             contentType.EnsureProperties(c => c.Id, c => c.SchemaXml, c => c.FieldLinks.Include(fl => fl.Id, fl => fl.Required, fl => fl.Hidden));
-            field.EnsureProperties(f => f.Id, f => f.SchemaXml);
+            field.EnsureProperties(f => f.Id, f => f.SchemaXmlWithResourceTokens);
 
             Log.Info(Constants.LOGGING_SOURCE, CoreResources.FieldAndContentTypeExtensions_AddField0ToContentType1, field.Id, contentType.Id);
 
@@ -753,7 +850,7 @@ namespace Microsoft.SharePoint.Client
             var flink = contentType.FieldLinks.FirstOrDefault(fld => fld.Id == field.Id);
             if (flink == null)
             {
-                XElement fieldElement = XElement.Parse(field.SchemaXml);
+                XElement fieldElement = XElement.Parse(field.SchemaXmlWithResourceTokens);
                 fieldElement.SetAttributeValue("AllowDeletion", "TRUE"); // Default behavior when adding a field to a CT from the UI.
                 field.SchemaXml = fieldElement.ToString();
                 var fldInfo = new FieldLinkCreationInformation();
@@ -769,7 +866,7 @@ namespace Microsoft.SharePoint.Client
             flink.EnsureProperties(f => f.Required, f => f.Hidden);
 
             if ((required != flink.Required) || (hidden != flink.Hidden))
-			{
+            {
                 // Update FieldLink
                 flink.Required = required;
                 flink.Hidden = hidden;
@@ -1039,7 +1136,7 @@ namespace Microsoft.SharePoint.Client
                     var group = ct.Attribute("Group") != null ? ct.Attribute("Group").Value : string.Empty;
 
                     // Create CT
-                    web.CreateContentType(name, description, ctid, group);
+                    var newct = web.CreateContentType(name, description, ctid, group);
 
                     // Add fields to content type 
                     var fieldRefs = from fr in ct.Descendants(ns + "FieldRefs").Elements(ns + "FieldRef") select fr;
@@ -1049,6 +1146,60 @@ namespace Microsoft.SharePoint.Client
                         var required = fieldRef.Attribute("Required") != null ? bool.Parse(fieldRef.Attribute("Required").Value) : false;
                         var hidden = fieldRef.Attribute("Hidden") != null ? bool.Parse(fieldRef.Attribute("Hidden").Value) : false;
                         web.AddFieldToContentTypeById(ctid, frid, required, hidden);
+                    }
+
+                    // Add AllowedContentTypes/SharedFields/WelcomePageFields
+                    // Only for Document Sets of course
+                    if (ctid.StartsWith(BuiltInContentTypeId.DocumentSet)) //DocumentSetTemplate.DocumentSetTemplate.IsChildOfDocumentSetContentType() appears not to be working
+                    {
+                        // Load Docset Template
+                        var template = DocumentSetTemplate.GetDocumentSetTemplate(web.Context, newct);
+                        web.Context.Load(template, t => t.AllowedContentTypes, t => t.SharedFields, t => t.WelcomePageFields);
+                        web.Context.ExecuteQuery();
+
+                        // Add allowed content types
+                        var allowedContentTypes = from ac in ct.Descendants(ns + "AllowedContentTypes").Elements(ns + "AllowedContentType") select ac;
+                        foreach (var allowedContentType in allowedContentTypes)
+                        {
+                            var id = allowedContentType.Attribute("ID").Value;
+                            var act = web.GetContentTypeById(id);
+                            if (act != null &&
+                                !template.AllowedContentTypes.Any(a => a.StringValue == id))
+                            {
+                                template.AllowedContentTypes.Add(act.Id);
+                                template.Update(true);
+                            }
+                        }
+
+                        // Add shared fields
+                        var sharedFields = from sf in ct.Descendants(ns + "SharedFields").Elements(ns + "SharedField") select sf;
+                        foreach (var sharedField in sharedFields)
+                        {
+                            var id = sharedField.Attribute("ID").Value;
+                            var field = web.GetFieldById<Field>(new Guid(id));
+                            if (field != null &&
+                                !template.SharedFields.Any(a => a.Id == field.Id))
+                            {
+                                template.SharedFields.Add(field);
+                                template.Update(true);
+                            }
+                        }
+
+                        // Add WelcomePageFields fields
+                        var welcomePageFields = from wpf in ct.Descendants(ns + "WelcomePageFields").Elements(ns + "WelcomePageField") select wpf;
+                        foreach (var welcomePageField in welcomePageFields)
+                        {
+                            var id = welcomePageField.Attribute("ID").Value;
+                            var field = web.GetFieldById<Field>(new Guid(id));
+                            if (field != null &&
+                                !template.WelcomePageFields.Any(a => a.Id == field.Id))
+                            {
+                                template.WelcomePageFields.Add(field);
+                                template.Update(true);
+                            }
+                        }
+                        
+                        web.Context.ExecuteQueryRetry();
                     }
 
                     returnCT = web.GetContentTypeById(ctid);
@@ -1102,6 +1253,47 @@ namespace Microsoft.SharePoint.Client
 
             // Return the content type object
             return myContentType;
+        }
+
+        /// <summary>
+        /// Deletes a content type from the web by name
+        /// </summary>
+        /// <param name="web">Web to delete the content type from</param>
+        /// <param name="contentTypeName">Name of the content type to delete</param>
+        internal static void DeleteContentTypeByName(this Web web, string contentTypeName)
+        {
+            var contentTypes = web.Context.LoadQuery(web.ContentTypes.Where(c => c.Name == contentTypeName));
+            web.Context.ExecuteQueryRetry();
+
+            var enumerable = contentTypes as ContentType[] ?? contentTypes.ToArray();
+            if (!enumerable.Any())
+            {
+                Log.Warning(Constants.LOGGING_SOURCE, CoreResources.FieldAndContentTypeExtensions_DeleteContentTypeByName, contentTypeName);
+            }
+            else
+            {
+                enumerable.First().DeleteObject();
+                web.Context.ExecuteQueryRetry();
+            }
+        }
+
+        /// <summary>
+        /// Deletes a content type from the web by id
+        /// </summary>
+        /// <param name="web">Web to delete the content type from</param>
+        /// <param name="contentTypeId">Id of the content type to delete</param>
+        internal static void DeleteContentTypeById(this Web web, string contentTypeId)
+        {
+            var contentType = GetContentTypeById(web, contentTypeId);
+            if (contentType == null)
+            {
+                Log.Warning(Constants.LOGGING_SOURCE, CoreResources.FieldAndContentTypeExtensions_DeleteContentTypeById, contentTypeId);
+            }
+            else
+            {
+                contentType.DeleteObject();
+                web.Context.ExecuteQueryRetry();
+            }
         }
 
         /// <summary>
@@ -1199,6 +1391,30 @@ namespace Microsoft.SharePoint.Client
                 }
             }
 
+            return null;
+        }
+
+        /// <summary>
+        /// Searches for the content type with the closest match to the value of the specified content type ID. 
+        /// If the search finds two matches, the shorter ID is returned. 
+        /// </summary>
+        /// <param name="contentTypes">Content type collection to search</param>
+        /// <param name="contentTypeId">Complete ID for the content type to search</param>
+        /// <returns>Content type Id object or null if was not found</returns>
+        public static ContentTypeId BestMatch(this ContentTypeCollection contentTypes, string contentTypeId)
+        {
+            if (string.IsNullOrEmpty(contentTypeId))
+            {
+                throw new ArgumentNullException("contentTypeId");
+            }
+            var ctx = contentTypes.Context;
+            contentTypes.EnsureProperties(c => c.Include(ct => ct.Id));
+
+            var res = contentTypes.Where(c => c.Id.StringValue.StartsWith(contentTypeId)).OrderBy(c => c.Id.StringValue.Length).FirstOrDefault();
+            if (res != null)
+            {
+                return res.Id;
+            }
             return null;
         }
 
@@ -1406,7 +1622,7 @@ namespace Microsoft.SharePoint.Client
 
         #endregion
 
-#if !CLIENTSDKV15
+#if !ONPREMISES
 
         #region Localization
 
@@ -1453,7 +1669,7 @@ namespace Microsoft.SharePoint.Client
         /// <param name="descriptionResource">Localized value for the Description property</param>
         public static void SetLocalizationForContentType(this ContentType contentType, string cultureName, string nameResource, string descriptionResource)
         {
-            if (contentType.IsObjectPropertyInstantiated("TitleResource"))
+            if (!contentType.IsObjectPropertyInstantiated("NameResource"))
             {
                 contentType.Context.Load(contentType);
                 contentType.Context.ExecuteQueryRetry();

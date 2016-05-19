@@ -2,6 +2,7 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Microsoft.SharePoint.Client;
 using Microsoft.SharePoint.Client.Publishing;
+using OfficeDevPnP.Core.Utilities;
 
 namespace OfficeDevPnP.Core.Tests.AppModelExtensions
 {
@@ -23,8 +24,6 @@ namespace OfficeDevPnP.Core.Tests.AppModelExtensions
                 var name = "WebExtensions";
                 ctx.ExecuteQueryRetry();
 
-                ExceptionHandlingScope scope = new ExceptionHandlingScope(ctx);
-
                 Web web;
                 Site site;
                 site = ctx.Site;
@@ -33,27 +32,38 @@ namespace OfficeDevPnP.Core.Tests.AppModelExtensions
                     site.ActivateFeature(publishingSiteFeatureId);
                     deactivatePublishingOnTearDown = true;
                 }
-                using (scope.StartScope())
-                {                    
-                    using (scope.StartTry())
+
+                try
+                {
+                    web = ctx.Site.OpenWeb(name);
+                    web.DeleteObject();
+                    ctx.ExecuteQueryRetry();
+                }
+                catch { }
+
+                using (var webCtx = ctx.Clone(TestCommon.DevSiteUrl))
+                {
+                    web = webCtx.Web.Webs.Add(new WebCreationInformation
                     {
-                        web = ctx.Site.OpenWeb(name);
-                        web.DeleteObject();
-                    }
-                    using (scope.StartCatch())
-                    {
-                        
-                        web = ctx.Web.Webs.Add(new WebCreationInformation
-                        {
-                            Title = name,
-                            WebTemplate = webTemplate,
-                            Url = name
-                        });                        
-                    }
-                    using (scope.StartFinally())
-                    {                        
-                        return web;
-                    }
+                        Title = name,
+                        WebTemplate = webTemplate,
+                        Url = name
+                    });
+                    webCtx.ExecuteQueryRetry();
+                }
+
+                // Wait for 2 minutes after creating a publishing web...especially when using app-only as otherwise one 
+                // can get a "Microsoft.SharePoint.Client.ServerException: The site is not valid. The 'Pages' document library is missing." error
+                // during subsequent creation/deletion actions
+                if (webTemplate.Equals("CMSPUBLISHING#0", StringComparison.InvariantCultureIgnoreCase))
+                {
+                    System.Threading.Thread.Sleep(3 * 60 * 1000);
+                }
+
+                // Create client context object for the newly created web and return that one...avoids "request uses too many resources" errors
+                using (var newWebCtx = ctx.Clone(TestCommon.DevSiteUrl + "/" + name))
+                {
+                    return newWebCtx.Web;
                 }
             }
         }
@@ -72,6 +82,50 @@ namespace OfficeDevPnP.Core.Tests.AppModelExtensions
         #endregion
 
         #region Wiki page tests
+        [TestMethod]
+        public void AddWikiPageTest()
+        {
+            var web = Setup();
+
+            //Add new wiki library
+            web.CreateList(ListTemplateType.WebPageLibrary, "wikipages", false);
+
+            using (var ctx = TestCommon.CreateClientContext())
+            {
+                using (var ctx2 = ctx.Clone(TestCommon.DevSiteUrl + "/WebExtensions"))
+                {
+                    var wikiPage2 = ctx2.Web.AddWikiPage("wikipages", "test.aspx");
+                    Assert.AreEqual(wikiPage2.ToLower(), "wikipages/test.aspx");
+                    var wikiPage1 = ctx2.Web.AddWikiPage("Site Pages", "test.aspx");
+                    Assert.AreEqual(wikiPage1.ToLower(), "sitepages/test.aspx");
+
+                    Teardown(ctx2.Web);
+                }
+            }
+        }
+
+        [TestMethod]
+        public void EnsureWikiPageTest()
+        {
+            var web = Setup();
+
+            using (var ctx = TestCommon.CreateClientContext())
+            {
+                using (var ctx2 = ctx.Clone(TestCommon.DevSiteUrl + "/WebExtensions"))
+                {
+                    // first run creates the page
+                    var wikiPage1 = ctx2.Web.EnsureWikiPage("Site Pages", "test.aspx");
+                    Assert.AreEqual(wikiPage1.ToLower(), "sitepages/test.aspx");
+                    
+                    // Second run should return the page
+                    wikiPage1 = ctx2.Web.EnsureWikiPage("Site Pages", "test.aspx");
+                    Assert.AreEqual(wikiPage1.ToLower(), "sitepages/test.aspx");
+
+                    Teardown(ctx2.Web);
+                }
+            }
+        }
+
         [TestMethod]
         public void CanAddLayoutToWikiPageTest()
         {

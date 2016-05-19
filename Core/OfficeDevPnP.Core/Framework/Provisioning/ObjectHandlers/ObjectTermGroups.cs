@@ -39,7 +39,8 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
 
                     var newGroup = false;
 
-                    TermGroup group = termStore.Groups.FirstOrDefault(g => g.Id == modelTermGroup.Id);
+                    TermGroup group = termStore.Groups.FirstOrDefault(
+                        g => g.Id == modelTermGroup.Id || g.Name == modelTermGroup.Name);
                     if (group == null)
                     {
                         if (modelTermGroup.Name == "Site Collection")
@@ -86,12 +87,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
                         var newTermSet = false;
                         if (!newGroup)
                         {
-                            set = group.TermSets.FirstOrDefault(ts => ts.Id == modelTermSet.Id);
-                            if (set == null)
-                            {
-                                set = group.TermSets.FirstOrDefault(ts => ts.Name == modelTermSet.Name);
-
-                            }
+                            set = group.TermSets.FirstOrDefault(ts => ts.Id == modelTermSet.Id || ts.Name == modelTermSet.Name);
                         }
                         if (set == null)
                         {
@@ -310,15 +306,23 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
                     // Find the site collection termgroup, if any
                     TaxonomySession session = TaxonomySession.GetTaxonomySession(web.Context);
                     var termStore = session.GetDefaultSiteCollectionTermStore();
-					web.Context.Load(termStore, t => t.Id, t => t.DefaultLanguage);
+					web.Context.Load(termStore, t => t.Id, t => t.DefaultLanguage, t => t.OrphanedTermsTermSet);
 					web.Context.ExecuteQueryRetry();
 
+                    var orphanedTermsTermSetId = termStore.OrphanedTermsTermSet.Id;
 					if (termStore.ServerObjectIsNull.Value)
 					{
 						termStore = session.GetDefaultKeywordsTermStore();
 						web.Context.Load(termStore, t => t.Id, t => t.DefaultLanguage);
 						web.Context.ExecuteQueryRetry();
 					}
+
+                    var propertyBagKey = string.Format("SiteCollectionGroupId{0}", termStore.Id);
+
+                    var siteCollectionTermGroupId = web.GetPropertyBagValueString(propertyBagKey, "");
+
+                    Guid termGroupGuid = Guid.Empty;
+                    Guid.TryParse(siteCollectionTermGroupId, out termGroupGuid);
 
                     List<TermGroup> termGroups = new List<TermGroup>();
                     if (creationInfo.IncludeAllTermGroups)
@@ -332,12 +336,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
                     }
                     else
                     {
-                        var propertyBagKey = string.Format("SiteCollectionGroupId{0}", termStore.Id);
-
-                        var siteCollectionTermGroupId = web.GetPropertyBagValueString(propertyBagKey, "");
-
-                        Guid termGroupGuid = Guid.Empty;
-                        if (Guid.TryParse(siteCollectionTermGroupId, out termGroupGuid))
+                        if (termGroupGuid != Guid.Empty)
                         {
                             var termGroup = termStore.GetGroup(termGroupGuid);
                             web.Context.Load(termGroup,
@@ -354,22 +353,27 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
 
                     foreach (var termGroup in termGroups)
                     {
+                        Boolean isSiteCollectionTermGroup = termGroupGuid != Guid.Empty && termGroup.Id == termGroupGuid;
+
                         var modelTermGroup = new Model.TermGroup
                         {
-                            Name = termGroup.Name,
-                            Id = termGroup.Id,
+                            Name = isSiteCollectionTermGroup ? "{sitecollectiontermgroupname}" : termGroup.Name,
+                            Id = isSiteCollectionTermGroup ? Guid.Empty : termGroup.Id,
                             Description = termGroup.Description
                         };
 
-                        foreach (var termSet in termGroup.TermSets)
+                        foreach (var termSet in termGroup.TermSets.Where(ts => ts.Id != orphanedTermsTermSetId))
                         {
                             var modelTermSet = new Model.TermSet();
                             modelTermSet.Name = termSet.Name;
-                            modelTermSet.Id = termSet.Id;
+                            if (!isSiteCollectionTermGroup)
+                            {
+                                modelTermSet.Id = termSet.Id;
+                            }
                             modelTermSet.IsAvailableForTagging = termSet.IsAvailableForTagging;
                             modelTermSet.IsOpenForTermCreation = termSet.IsOpenForTermCreation;
                             modelTermSet.Description = termSet.Description;
-                            modelTermSet.Terms.AddRange(GetTerms<TermSet>(web.Context, termSet, termStore.DefaultLanguage));
+                            modelTermSet.Terms.AddRange(GetTerms<TermSet>(web.Context, termSet, termStore.DefaultLanguage, isSiteCollectionTermGroup));
                             foreach (var property in termSet.CustomProperties)
                             {
                                 modelTermSet.Properties.Add(property.Key, property.Value);
@@ -384,7 +388,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
             return template;
         }
 
-        private List<Model.Term> GetTerms<T>(ClientRuntimeContext context, TaxonomyItem parent, int defaultLanguage)
+        private List<Model.Term> GetTerms<T>(ClientRuntimeContext context, TaxonomyItem parent, int defaultLanguage, Boolean isSiteCollectionTermGroup = false)
         {
             List<Model.Term> termsToReturn = new List<Model.Term>();
             TermCollection terms = null;
@@ -405,7 +409,10 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
             foreach (var term in terms)
             {
                 var modelTerm = new Model.Term();
-                modelTerm.Id = term.Id;
+                if (!isSiteCollectionTermGroup)
+                {
+                    modelTerm.Id = term.Id;
+                }
                 modelTerm.Name = term.Name;
                 modelTerm.IsAvailableForTagging = term.IsAvailableForTagging;
 
@@ -449,7 +456,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers
                 }
                 if (term.TermsCount > 0)
                 {
-                    modelTerm.Terms.AddRange(GetTerms<Term>(context, term, defaultLanguage));
+                    modelTerm.Terms.AddRange(GetTerms<Term>(context, term, defaultLanguage, isSiteCollectionTermGroup));
                 }
                 termsToReturn.Add(modelTerm);
             }

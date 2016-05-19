@@ -128,7 +128,9 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.Providers.Xml
                      {
                          Key = bag.Key,
                          Value = bag.Value,
-                         Indexed = bag.Indexed
+                         Indexed = bag.Indexed,
+                         Overwrite = bag.Overwrite,
+                         OverwriteSpecified = true,
                      }).ToArray();
             }
             else
@@ -715,7 +717,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.Providers.Xml
                     }
                     schemaPage.Layout = pageLayout;
                     schemaPage.Overwrite = page.Overwrite;
-                    schemaPage.Security = page.Security.FromTemplateToSchemaObjectSecurityV201508();
+                    schemaPage.Security = (page.Security != null) ? page.Security.FromTemplateToSchemaObjectSecurityV201508() : null;
 
                     schemaPage.WebParts = page.WebParts.Count > 0 ?
                         (from wp in page.WebParts
@@ -782,7 +784,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.Providers.Xml
             #region Composed Looks
 
             // Translate ComposedLook, if any
-            if (template.ComposedLook != null)
+            if (template.ComposedLook != null && !template.ComposedLook.Equals(Model.ComposedLook.Empty))
             {
                 result.ComposedLook = new V201508.ComposedLook
                 {
@@ -815,7 +817,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.Providers.Xml
                              Description = wd.Description,
                              DisplayName = wd.DisplayName,
                              DraftVersion = wd.DraftVersion,
-                             FormField = wd.FormField.ToXmlElement(),
+                             FormField = (wd.FormField != null) ? wd.FormField.ToXmlElement() : null,
                              Id = wd.Id.ToString(),
                              InitiationUrl = wd.InitiationUrl,
                              Properties = (wd.Properties != null && wd.Properties.Count > 0) ?
@@ -946,10 +948,11 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.Providers.Xml
             #region Providers
 
             // Translate Providers, if any
-            if (template.Providers != null && template.Providers.Count > 0)
-            {
+            if ((template.Providers != null && template.Providers.Count > 0) || (template.ExtensibilityHandlers != null && template.ExtensibilityHandlers.Count > 0))
+             {
+                var extensibilityHandlers = template.ExtensibilityHandlers.Union(template.Providers);
                 result.Providers =
-                    (from provider in template.Providers
+                    (from provider in extensibilityHandlers
                      select new V201508.Provider
                      {
                          HandlerType = String.Format("{0}, {1}", provider.Type, provider.Assembly),
@@ -1103,7 +1106,8 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.Providers.Xml
                     {
                         Key = bag.Key,
                         Value = bag.Value,
-                        Indexed = bag.Indexed
+                        Indexed = bag.Indexed,
+                        Overwrite = bag.OverwriteSpecified ? bag.Overwrite : false,
                     });
             }
 
@@ -1160,7 +1164,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.Providers.Xml
                 {
                     AuditLogTrimmingRetention = source.AuditSettings.AuditLogTrimmingRetentionSpecified ? source.AuditSettings.AuditLogTrimmingRetention : 0,
                     TrimAuditLog = source.AuditSettings.TrimAuditLogSpecified ? source.AuditSettings.TrimAuditLog : false,
-                    AuditFlags = source.AuditSettings.Audit.Aggregate(Microsoft.SharePoint.Client.AuditMaskType.None, (acc, next) => acc &= (Microsoft.SharePoint.Client.AuditMaskType)Enum.Parse(typeof(Microsoft.SharePoint.Client.AuditMaskType), next.AuditFlag.ToString())),
+                    AuditFlags = source.AuditSettings.Audit.Aggregate(Microsoft.SharePoint.Client.AuditMaskType.None, (acc, next) => acc |= (Microsoft.SharePoint.Client.AuditMaskType)Enum.Parse(typeof(Microsoft.SharePoint.Client.AuditMaskType), next.AuditFlag.ToString())),
                 };
             }
 
@@ -1732,8 +1736,8 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.Providers.Xml
                         var handlerType = Type.GetType(provider.HandlerType, false);
                         if (handlerType != null)
                         {
-                            result.Providers.Add(
-                                new Model.Provider
+                            result.ExtensibilityHandlers.Add(
+                                new Model.ExtensibilityHandler
                                 {
                                     Assembly = handlerType.Assembly.FullName,
                                     Type = handlerType.FullName,
@@ -1753,7 +1757,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.Providers.Xml
 
     internal static class V201508Extensions
     {
-        public static V201508.Term[] FromModelTermsToSchemaTermsV201508(this List<Model.Term> terms)
+        public static V201508.Term[] FromModelTermsToSchemaTermsV201508(this TermCollection terms)
         {
             V201508.Term[] result = terms.Count > 0 ? (
                 from term in terms
@@ -2112,7 +2116,7 @@ namespace OfficeDevPnP.Core.Framework.Provisioning.Providers.Xml
 
         public static V201508.ObjectSecurity FromTemplateToSchemaObjectSecurityV201508(this Model.ObjectSecurity objectSecurity)
         {
-            return ((objectSecurity != null) ?
+            return ((objectSecurity != null && (objectSecurity.ClearSubscopes == true || objectSecurity.CopyRoleAssignments == true || objectSecurity.RoleAssignments.Count > 0)) ?
                 new V201508.ObjectSecurity
                 {
                     BreakRoleInheritance = new V201508.ObjectSecurityBreakRoleInheritance

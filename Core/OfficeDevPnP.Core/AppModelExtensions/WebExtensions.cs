@@ -11,6 +11,7 @@ using OfficeDevPnP.Core.Entities;
 using OfficeDevPnP.Core.Framework.Provisioning.ObjectHandlers;
 using OfficeDevPnP.Core.Framework.Provisioning.Model;
 using OfficeDevPnP.Core.Diagnostics;
+using OfficeDevPnP.Core.Utilities;
 using System.Reflection;
 
 namespace Microsoft.SharePoint.Client
@@ -181,7 +182,7 @@ namespace Microsoft.SharePoint.Client
             var childWeb = webs.FirstOrDefault(item => string.Equals(item.ServerRelativeUrl, serverRelativeUrl, StringComparison.OrdinalIgnoreCase));
             return childWeb;
         }
-
+        
         /// <summary>
         /// Determines if a child Web site with the specified leaf URL exists. 
         /// </summary>
@@ -237,6 +238,24 @@ namespace Microsoft.SharePoint.Client
             }
             return exists;
         }
+        
+        /// <summary>
+        /// Determines if a web exists by title.
+        /// </summary>
+        /// <param name="title">Title of the web to check.</param>
+        /// <param name="parentWeb">Parent web to check under.</param>
+        /// <returns>True if a web with the given title exists.</returns>
+        public static bool WebExistsByTitle(this Web parentWeb, string title)
+        {
+            bool exists = false;
+
+            var subWeb = (from w in parentWeb.Webs where w.Title == title select w).SingleOrDefault();
+            if (subWeb != null)
+            {
+                exists = true;
+            }
+            return exists;
+        }
 
         /// <summary>
         /// Checks if the current web is a sub site or not
@@ -246,17 +265,18 @@ namespace Microsoft.SharePoint.Client
         public static bool IsSubSite(this Web web)
         {
             Site site = (web.Context as ClientContext).Site;
+            var rootWeb = site.EnsureProperty(s => s.RootWeb);
 
-            var webUrl = web.EnsureProperty(s => s.Url);
-            var siteUrl = site.EnsureProperty(s => s.Url);
+            web.EnsureProperty(w => w.Id);
+            rootWeb.EnsureProperty(w => w.Id);
 
-            if (webUrl.Equals(siteUrl, StringComparison.InvariantCultureIgnoreCase))
+            if (rootWeb.Id != web.Id)
             {
-                return false;
+                return true;
             }
             else
             {
-                return true;
+                return false;
             }
         }
 
@@ -631,6 +651,17 @@ namespace Microsoft.SharePoint.Client
         /// </summary>
         /// <param name="web">Web that will hold the property bag entry</param>
         /// <param name="key">Key for the property bag entry</param>
+        /// <param name="value">Datetime value for the property bag entry</param>
+        public static void SetPropertyBagValue(this Web web, string key, DateTime value)
+        {
+            SetPropertyBagValueInternal(web, key, value);
+        }
+
+        /// <summary>
+        /// Sets a key/value pair in the web property bag
+        /// </summary>
+        /// <param name="web">Web that will hold the property bag entry</param>
+        /// <param name="key">Key for the property bag entry</param>
         /// <param name="value">Value for the property bag entry</param>
         private static void SetPropertyBagValueInternal(Web web, string key, object value)
         {
@@ -699,6 +730,26 @@ namespace Microsoft.SharePoint.Client
             if (value != null)
             {
                 return (int)value;
+            }
+            else
+            {
+                return defaultValue;
+            }
+        }
+
+        /// <summary>
+        /// Get DateTime typed property bag value. If does not contain, returns default value.
+        /// </summary>
+        /// <param name="web">Web to read the property bag value from</param>
+        /// <param name="key">Key of the property bag entry to return</param>
+        /// <param name="defaultValue"></param>
+        /// <returns>Value of the property bag entry as integer</returns>
+        public static DateTime? GetPropertyBagValueDateTime(this Web web, string key, DateTime defaultValue)
+        {
+            object value = GetPropertyBagValueInternal(web, key);
+            if (value != null)
+            {
+                return (DateTime)value;
             }
             else
             {
@@ -992,7 +1043,7 @@ namespace Microsoft.SharePoint.Client
         #endregion
 
         #region Localization
-#if !CLIENTSDKV15
+#if !ONPREMISES
         /// <summary>
         /// Can be used to set translations for different cultures. 
         /// </summary>
@@ -1040,8 +1091,6 @@ namespace Microsoft.SharePoint.Client
         public static ProvisioningTemplate GetProvisioningTemplate(this Web web)
         {
             ProvisioningTemplateCreationInformation creationInfo = new ProvisioningTemplateCreationInformation(web);
-            // Load the base template which will be used for the comparison work
-            creationInfo.BaseTemplate = web.GetBaseTemplate();
 
             return new SiteToTemplateConversion().GetRemoteTemplate(web, creationInfo);
         }
@@ -1087,5 +1136,89 @@ namespace Microsoft.SharePoint.Client
         }
 
         #endregion
+
+#region Request Access
+#if !ONPREMISES
+        /// <summary>
+        /// Disables the request access on the web.
+        /// </summary>
+        /// <param name="web">The web to disable request access.</param>
+        public static void DisableRequestAccess(this Web web)
+        {
+            web.RequestAccessEmail = string.Empty;
+            web.Update();
+            web.Context.ExecuteQueryRetry();
+        }
+
+        /// <summary>
+        /// Enables request access for the specified e-mail addresses.
+        /// </summary>
+        /// <param name="web">The web to enable request access.</param>
+        /// <param name="emails">The e-mail addresses to send access requests to.</param>
+        public static void EnableRequestAccess(this Web web, params string[] emails)
+        {
+            web.EnableRequestAccess(emails.AsEnumerable());
+        }
+
+        /// <summary>
+        /// Enables request access for the specified e-mail addresses.
+        /// </summary>
+        /// <param name="web">The web to enable request access.</param>
+        /// <param name="emails">The e-mail addresses to send access requests to.</param>
+        public static void EnableRequestAccess(this Web web, IEnumerable<string> emails)
+        {
+            // keep them unique, but keep order
+            var uniqueEmails = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+            var sb = new StringBuilder();
+            var skippedEmails = new List<string>();
+
+            foreach (string email in emails)
+            {
+                if (uniqueEmails.Contains(email) || string.IsNullOrWhiteSpace(email))
+                    continue;
+
+                var value = (sb.Length > 0 ? ";" : "") + email;
+
+                // max 255 chars
+                if (sb.Length + value.Length <= byte.MaxValue)
+                {
+                    sb.Append(value);
+                    uniqueEmails.Add(email);
+                }
+                else
+                {
+                    skippedEmails.Add(email);
+                }
+            }
+
+            if (skippedEmails.Count > 0)
+                Log.Warning(Constants.LOGGING_SOURCE, CoreResources.WebExtensions_RequestAccessEmailLimitExceeded, string.Join(", ", skippedEmails));
+
+            web.RequestAccessEmail = sb.ToString();
+            web.Update();
+            web.Context.ExecuteQueryRetry();
+        }
+
+        /// <summary>
+        /// Gets the request access e-mail addresses of the web.
+        /// </summary>
+        /// <param name="web">The web to get the request access e-mail addresses from.</param>
+        /// <returns>The request access e-mail addresses of the web.</returns>
+        public static IEnumerable<string> GetRequestAccessEmails(this Web web)
+        {
+            var emails = new List<string>();
+
+            web.EnsureProperty(w => w.RequestAccessEmail);
+
+            if (!string.IsNullOrWhiteSpace(web.RequestAccessEmail))
+            {
+                foreach (string email in web.RequestAccessEmail.Split(';'))
+                    emails.Add(email.Trim());
+            }
+
+            return emails;
+        }
+    #endif
+    #endregion
     }
 }
